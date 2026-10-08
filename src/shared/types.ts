@@ -1,4 +1,5 @@
 export type View = 'calendar' | 'space' | 'suggestions' | 'connections' | 'settings';
+export type PlannerUICommand = 'new-page' | 'search' | 'settings' | 'today' | 'back' | 'forward';
 export interface DateValue { date: string; time?: string; timeZone: string }
 export interface PageBlock { id: string; type: string; props: Record<string, unknown>; content?: unknown; children?: PageBlock[] }
 export interface Page {
@@ -7,8 +8,15 @@ export interface Page {
   pinned: boolean; pinOrder: number; parentId: string | null; revision: number;
   createdAt: string; updatedAt: string; trashedAt: string | null; isTemplate: boolean;
   reminder?: ReminderSpec;
+  completionState?: PageCompletionState;
+  remindersResumedAt?: string;
   trashState?: { status: 'active' | 'completed' | 'archived'; reminder?: ReminderSpec; entries: { id: string; active: boolean; reminder?: ReminderSpec; revisionAfterTrash: number }[] };
 }
+export interface PageCompletionState {
+  reminder?: { before: ReminderSpec; after: ReminderSpec; deadline: DateValue | null };
+  entries: { id: string; active: boolean; reminder?: ReminderSpec; revisionAfterCompletion: number }[];
+}
+export interface PageReopenResult { page: Page; restoredEntryCount: number; skippedEntryCount: number; message: string }
 export interface ReminderSpec { enabled: boolean; beforeMinutes: number; time?: string }
 export type SessionStatus = 'planned' | 'done' | 'cancelled';
 export interface CalendarEntry {
@@ -64,7 +72,7 @@ export interface WorkspaceSnapshot {
   suggestions: SourceSuggestion[]; connections: Connection[]; importedEvents: ImportedEvent[];
   settings: Settings;
 }
-export interface AppEvent { type: 'changed' | 'open-page' | 'assistant-delta' | 'assistant-done' | 'assistant-error' | 'widget-error' | 'flush-request'; pageId?: string; text?: string; data?: unknown }
+export type AppEvent = { type: 'changed' | 'open-page' | 'assistant-delta' | 'assistant-done' | 'assistant-error' | 'widget-error' | 'flush-request'; pageId?: string; text?: string; data?: unknown } | { type: 'ui-command'; data: { command: PlannerUICommand }; pageId?: string; text?: string };
 export interface PlannerAPI {
   isDesktop: boolean;
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;

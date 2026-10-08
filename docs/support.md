@@ -2,9 +2,11 @@
 
 ## Starting and writing
 
-The first launch opens Calendar. Space's All items view contains undated ideas. Choose **New** to open a blank page with title focus. Use `⌘K` to search titles, page text, and labels; `⌘N` creates a page. The sidebar expands only when its toggle is clicked and remembers the choice. Text size and reduced motion are in Settings.
+The first launch opens Calendar. Space's All items view contains undated ideas. Choose **New** to open a blank page with title focus. Use `⌘K` to search titles, page text, and labels; arrow keys choose a result and Return opens it. `⌘N` creates a page and `⌘,` opens Settings. The sidebar expands only when its toggle is clicked and remembers the choice. Text size and reduced motion are in Settings.
 
-Checklists, work sessions, and page completion are independent. Complete a page explicitly when the task is finished. Completing it deactivates outstanding planned work/reminders but preserves fixed events and unfinished history; Undo restores the transition. Moving work does not move the deadline.
+Checklists, work sessions, and page completion are independent. Complete a page explicitly when the task is finished. Completing it deactivates outstanding planned work/reminders but preserves fixed events and unfinished history. **Reopen** activates the page and restores unchanged plans and reminders disabled by completion. It preserves writing and later schedule edits, leaves deleted entries deleted, and explains any plans it cannot restore. **Undo last change** remains a separate action. Moving work does not move the deadline.
+
+Opening a task retains the Calendar period/day or Space list, filters, and position you came from. Back returns there, including when opening a subpage. Focus contains active tasks; use All items for completed and archived tasks. Work, Due, and Event markers identify the date's purpose.
 
 ## Files
 
@@ -38,4 +40,4 @@ The assistant requires a selected page and an eligible ChatGPT account. Interrup
 
 ## Reporting a problem
 
-Include the app version, Mac architecture/OS, the action that failed, and the displayed error. Use a small redacted reproduction. Do not include account tokens, Keychain material, private attachments, or an unredacted backup. This repository has no public support endpoint configured yet.
+Report problems through [GitHub Issues](https://github.com/Cheezecats/mac-planner/issues). Include the app version, Mac architecture/OS, the action that failed, and the displayed error. Use a small redacted reproduction. Do not include account tokens, Keychain material, private attachments, or an unredacted backup.

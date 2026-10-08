@@ -13,6 +13,7 @@ Core service: `new PlannerService(repository)`; repository `getSnapshot(): Works
 - page.update {id,expectedRevision,changes} => Page (only permitted Page fields)
 - page.patch {id,expectedRevision,operations} => Page; operations insert/update/delete block by ID; preserve unknown blocks
 - page.complete {id,expectedRevision} => Page; deactivate work with history/undo
+- page.reopen {id,expectedRevision} => PageReopenResult {page,restoredEntryCount,skippedEntryCount,message}; reopen a completed page and restore only unchanged completion-disabled work/reminders, preserving later edits and deleted entries
 - page.undo {id} => Page; restore latest page transaction with revision conflict protection
 - page.duplicate {id,asTemplate?:boolean} => Page; clear dates/completion/practice and remap stable block/resource IDs
 - page.instantiate {id} => Page; template to active page
@@ -45,7 +46,12 @@ Core service: `new PlannerService(repository)`; repository `getSnapshot(): Works
 - assistant.signIn => Connection; assistant.models => {slug,display_name}[]; assistant.send {pageId,text,model?,assetIds?} => {started:true}; assistant.cancel {pageId}; assistant.history {pageId}
 - widget.mount {id,bounds:{x,y,width,height}}; widget.bounds {id,bounds}; widget.stop {id}; widget.reload {id}; widget.revert {id,version}; widget.unmount {id}
 - app.openPage {id,blockId?}; app.notificationsStatus; app.companionInfo; app.loadExample (explicit sample-workspace action); app.quit
+- app.rendererReady => {received:true}; acknowledge only after workspace/history and the event subscription are installed, then drain queued native commands/page opens
 
 Native emits AppEvent types in shared types. Renderer desktop bridge is authoritative. Browser preview may use IndexedDB local fallback explicitly labeled preview; it must not impersonate Keychain/native integrations.
+
+Native menus and the menu-bar New page action emit `ui-command` with `{command: PlannerUICommand}`. Commands are `new-page`, `search`, `settings`, `today`, `back`, and `forward`. The renderer owns execution through its existing save guard; commands arriving during startup are queued until the renderer is ready. Native menu accelerators own desktop shortcuts so a command is not executed twice.
+
+Completion restoration data is portable and encrypted with the page. Reopening uses its saved post-completion values/revisions rather than the latest generic Undo record. Old pages can recover state from their completion history; without it, reopening activates the page and explains that no plans were restored. Templates and duplicates clear restoration data and reminder-resumption state.
 
 Reminder lead times are validated from zero through 525600 minutes (one year), bounding recurrence expansion. Date-only reminders use their chosen local time, default 09:00.

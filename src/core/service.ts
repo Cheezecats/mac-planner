@@ -5,6 +5,8 @@ import type {
   DateValue,
   Page,
   PageBlock,
+  PageCompletionState,
+  PageReopenResult,
   SourceSuggestion,
   ReminderSpec,
   StudyRecord,
@@ -35,6 +37,35 @@ type PortablePage = Page & { trashState?: PortableTrashState };
 const clone = <T>(v: T): T => structuredClone(v);
 const uuid = () => globalThis.crypto.randomUUID();
 const now = () => new Date().toISOString();
+const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+function completionState(
+  before: Page,
+  after: Page,
+  changes: RecordChange[],
+): PageCompletionState {
+  return {
+    ...(before.reminder?.enabled && !after.reminder?.enabled
+      ? {
+          reminder: {
+            before: clone(before.reminder),
+            after: clone(after.reminder!),
+            deadline: clone(before.deadline),
+          },
+        }
+      : {}),
+    entries: changes
+      .filter(c => c.collection === 'entries' && c.before && c.after)
+      .map(c => {
+        const old = c.before as CalendarEntry, next = c.after as CalendarEntry;
+        return {
+          id: c.id,
+          active: old.active,
+          reminder: clone(old.reminder),
+          revisionAfterCompletion: next.revision,
+        };
+      }),
+  };
+}
 function assertRevision(item: { revision: number }, expected: unknown): void {
   if (expected !== item.revision)
     throw new Error(
@@ -250,7 +281,12 @@ export class PlannerService {
           "isTemplate",
           "reminder",
         ]);
+        const reminderChanged =
+          ('reminder' in changes && !equal(page.reminder, changes.reminder)) ||
+          ('deadline' in changes && !equal(page.deadline, changes.deadline));
         Object.assign(page, changes);
+        if (page.completionState && reminderChanged)
+          delete page.completionState.reminder;
         deactivateMissingBlocks(page);
         touch(page);
         historyPage = page.id;
@@ -327,6 +363,10 @@ export class PlannerService {
         assertRevision(page, p.expectedRevision);
         if (page.status === "trashed")
           throw new Error("Restore the page before changing it");
+        if (method === 'page.complete' && page.status === 'completed') {
+          result = page;
+          break;
+        }
         if (method === "page.delete") {
           (page as PortablePage).trashState = {
             status: page.status,
@@ -349,12 +389,78 @@ export class PlannerService {
               : "trashed";
         if (page.status === "trashed") page.trashedAt = now();
         disable(page, method !== "page.complete");
+        if (method === 'page.complete')
+          page.completionState = completionState(
+            before.pages.find(x => x.id === page.id)!, page, changesBetween(before, state),
+          );
         if (method === "page.delete")
           for (const saved of (page as PortablePage).trashState!.entries)
             saved.revisionAfterTrash = findEntry(saved.id).revision;
         touch(page);
         historyPage = page.id;
         result = page;
+        break;
+      }
+      case "page.reopen": {
+        const page = findPage(p.id);
+        assertRevision(page, p.expectedRevision);
+        if (page.status !== 'completed') throw new Error('Only completed pages can be reopened');
+        let saved = page.completionState;
+        let restorationUnavailable = false;
+        if (!saved) {
+          const completionIndex = history.findLastIndex(h =>
+            h.pageId === page.id && h.method === 'page.complete' && !h.undone &&
+            h.changes.some(c => c.collection === 'pages' && c.id === page.id &&
+              (c.before as Page)?.status !== 'completed' &&
+              (c.after as Page)?.status === 'completed'),
+          );
+          const completion = history[completionIndex];
+          const change = completion?.changes.find(c => c.collection === 'pages' && c.id === page.id);
+          if (!change?.before || !change.after) {
+            saved = { entries: [] };
+            restorationUnavailable = true;
+          } else {
+            saved = completionState(change.before as Page, change.after as Page, completion.changes);
+            const reminderChanged = history.slice(completionIndex + 1).some(h =>
+              !h.undone && h.changes.some(c => c.collection === 'pages' && c.id === page.id &&
+                (!equal((c.before as Page)?.reminder, (c.after as Page)?.reminder) ||
+                 !equal((c.before as Page)?.deadline, (c.after as Page)?.deadline))),
+            );
+            if (reminderChanged) delete saved.reminder;
+          }
+        }
+        let restoredEntryCount = 0, skippedEntryCount = 0;
+        const blockIds = new Set(flattenBlocks(page.blocks).map(b => b.id));
+        for (const savedEntry of saved.entries) {
+          const entry = state.entries.find(e => e.id === savedEntry.id && e.pageId === page.id);
+          if (!entry || entry.revision !== savedEntry.revisionAfterCompletion ||
+              (savedEntry.active && entry.blockId && !blockIds.has(entry.blockId))) {
+            skippedEntryCount++;
+            continue;
+          }
+          entry.active = savedEntry.active;
+          entry.reminder = clone(savedEntry.reminder);
+          entry.revision++;
+          restoredEntryCount++;
+        }
+        if (saved.reminder && equal(page.reminder, saved.reminder.after) &&
+            equal(page.deadline, saved.reminder.deadline))
+          page.reminder = clone(saved.reminder.before);
+        page.status = 'active';
+        page.remindersResumedAt = now();
+        delete page.completionState;
+        touch(page);
+        historyPage = page.id;
+        const restored = `Restored ${restoredEntryCount} scheduled ${restoredEntryCount === 1 ? 'entry' : 'entries'}`;
+        const skipped = skippedEntryCount
+          ? `; skipped ${skippedEntryCount} changed or deleted ${skippedEntryCount === 1 ? 'entry' : 'entries'}`
+          : '';
+        result = {
+          page, restoredEntryCount, skippedEntryCount,
+          message: restorationUnavailable
+            ? 'Page reopened. Completion restoration data is unavailable; no schedules or reminders were restored.'
+            : `Page reopened. ${restored}${skipped}.`,
+        } satisfies PageReopenResult;
         break;
       }
       case "page.restore": {
@@ -483,6 +589,8 @@ export class PlannerService {
           reminder: undefined,
         });
         delete (copied as PortablePage).trashState;
+        delete copied.completionState;
+        delete copied.remindersResumedAt;
         const mapping = new Map<string, string>([[original.id, copied.id]]);
         for (const b of flattenBlocks(copied.blocks)) mapping.set(b.id, uuid());
         const studies = state.studies.filter((s) => s.pageId === original.id),

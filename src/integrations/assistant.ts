@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PageReopenResult } from '../shared/types';
 import { DateTime } from "luxon";
 import {
   IntegrationError,
@@ -17,6 +18,11 @@ const object = (
 const string = { type: "string" },
   revision = { type: "integer", minimum: 1 };
 const functions = [
+  {
+    name: 'reopen_page',
+    description: 'Only explicitly requested reopening of the current completed page. Read its latest revision first. Preserve writing and later schedule/reminder edits; return restoration counts. This is separate from undoing an edit.',
+    parameters: object({ expectedRevision: revision }),
+  },
   {
     name: "read_page",
     description: "Read current page only. No other pages.",
@@ -114,6 +120,12 @@ function permitsWrites(text: string) {
   return /\b(add|create|make|build|generate|edit|update|revise|rewrite|replace|remove|delete|insert|turn|convert|organize|write|draft)\b|添加|创建|生成|修改|更新|改写|删除|插入|制作|写|整理/i.test(
     text,
   );
+}
+function permitsReopen(text: string) {
+  const request = text.normalize('NFKC').replace(/[\u2018\u2019\u02bc]/g, "'").trim();
+  // A direct request elsewhere in the turn cannot override negation or a deferred/conditional intent.
+  if (/\b(?:no|not|never|don't|can't|cannot|won't|shouldn't|wouldn't|couldn't|mustn't|explain|describe|what|how|should|later|tomorrow|eventually|maybe|may|might|if|whether|once|unless|hypothetically|consider|considering|thinking)\b|不要|别|不想|不需要|先不|暂不|以后|稍后|待会|明天|可能|也许|或许|如果|考虑|假设|解释|说明|如何|怎么|应该.*吗/i.test(request)) return false;
+  return /(?:^|[.!?;,:]\s*|\band\s+)(?:please\s+)?reopen\b|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?reopen\b|\b(?:I\s+(?:want|need|would like)|I'd like)\s+(?:you\s+)?to\s+reopen\b|(?:^|[。！；，]\s*)(?:请|幫我|帮我|请帮我|請幫我)?(?:重新打开|重新开启|重新開啟)/i.test(request);
 }
 function textValue(value: unknown, max = 20000) {
   if (typeof value !== "string" || value.length > max)
@@ -265,9 +277,10 @@ export class AssistantClient {
           JSON.stringify({ page, sources }),
       };
       const writes = permitsWrites(o.text);
+      const reopens = permitsReopen(o.text);
       const tools = ASSISTANT_TOOLS.map((ns) => ({
         ...ns,
-        tools: ns.tools.filter((t) => writes || !WRITE_NAMES.has(t.name)),
+        tools: ns.tools.filter((t) => t.name === 'reopen_page' ? reopens : writes || !WRITE_NAMES.has(t.name)),
       }));
       for (let round = 0; round < 8; round++) {
         controller.signal.throwIfAborted();
@@ -324,6 +337,7 @@ export class AssistantClient {
               o.pageId,
               call,
               writes,
+              reopens,
               changes,
               proposals,
             );
@@ -474,6 +488,7 @@ export class AssistantClient {
     pageId: string,
     call: any,
     writes: boolean,
+    reopens: boolean,
     changes: string[],
     proposals: AssistantDeadlineProposal[],
   ) {
@@ -524,7 +539,7 @@ export class AssistantClient {
       proposals.push(proposal);
       return { proposal, reviewRequired: true };
     }
-    if (!writes)
+    if (name === 'reopen_page' ? !reopens : !writes)
       throw new IntegrationError(
         "tool-permission",
         "The current user request did not authorize page edits.",
@@ -539,7 +554,10 @@ export class AssistantClient {
         "The page changed. Read it again before editing.",
       );
     let result: unknown;
-    if (name === "patch_page") {
+    if (name === 'reopen_page') {
+      if (current.status !== 'completed') throw new IntegrationError('page-unavailable', 'Only completed pages can be reopened.');
+      result = await this.options.gateway.request('page.reopen', { id: pageId, expectedRevision: args.expectedRevision });
+    } else if (name === "patch_page") {
       if (!Array.isArray(args.operations) || args.operations.length > 100)
         throw new IntegrationError(
           "tool-arguments",
@@ -670,7 +688,9 @@ export class AssistantClient {
       });
     }
     const summary =
-      name === "patch_page"
+      name === 'reopen_page'
+        ? (result as PageReopenResult).message
+        : name === "patch_page"
         ? "Updated page blocks."
         : name === "create_checklist"
           ? "Added a checklist."

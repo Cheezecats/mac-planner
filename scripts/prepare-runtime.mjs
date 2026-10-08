@@ -1,7 +1,14 @@
 import {mkdir,copyFile,chmod,writeFile,readFile,cp} from 'node:fs/promises';
 import {join} from 'node:path';
+import {createRequire} from 'node:module';
 const target=process.env.PLANNER_TARGET_ARCH??process.env.npm_config_arch??process.arch;
 if(process.platform!=='darwin'||target!==process.arch)throw new Error(`Build on the target Mac architecture (${target}); host ${process.platform}/${process.arch} cannot silently supply the companion runtime.`);
+const packageData=JSON.parse(await readFile('package.json','utf8'));
+// Electron 44 initializes its pinned runtime lazily when its module is required.
+// Resolve it before copying mandatory notices, on every desktop/package/make path.
+const require=createRequire(join(process.cwd(),'package.json'));
+const electronBinary=require('electron');
+if(typeof electronBinary!=='string'||!electronBinary)throw new Error('Electron runtime did not initialize');
 await mkdir('dist/runtime',{recursive:true});await copyFile(process.execPath,'dist/runtime/node');await chmod('dist/runtime/node',0o755);await copyFile('dist/electron/mcp.cjs','dist/runtime/companion.cjs');
 await writeFile('dist/runtime/architecture.json',JSON.stringify({platform:process.platform,arch:process.arch,node:process.version},null,2));
 // Client IDs are public registration identifiers, never credentials. Persist them for Finder launches.
@@ -19,8 +26,8 @@ for(const [location,record] of Object.entries(lock.packages)){if(!location||reco
 await writeFile('dist/runtime/notices/inventory.json',JSON.stringify(inventory,null,2));
 await writeFile('dist/runtime/README.txt',`Planner companion runtime: Node ${process.version}, ${process.platform}/${process.arch}. Bundled to avoid a separate Node installation. See app dependency notices.\n`);
 await mkdir('companion/.codex-plugin',{recursive:true});await mkdir('companion/scripts',{recursive:true});
-await writeFile('companion/.codex-plugin/plugin.json',JSON.stringify({name:'planner',version:'0.1.0',description:'Read, edit and schedule local Planner pages through a private socket.'},null,2));
-await writeFile('companion/plugin.json',JSON.stringify({$schema:'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',name:'planner',version:'0.1.0',license:'MIT',description:'Read, edit and schedule local Planner pages through a private socket.'},null,2));
+await writeFile('companion/.codex-plugin/plugin.json',JSON.stringify({name:'planner',version:packageData.version,description:'Read, edit and schedule local Planner pages through a private socket.'},null,2));
+await writeFile('companion/plugin.json',JSON.stringify({$schema:'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',name:'planner',version:packageData.version,license:'MIT',description:'Read, edit and schedule local Planner pages through a private socket.'},null,2));
 await writeFile('companion/.mcp.json',JSON.stringify({mcpServers:{planner:{command:'${PLUGIN_ROOT}/scripts/launch.sh',args:[]}}},null,2));
 await copyFile('companion/.mcp.json','companion/mcp.json');
 await writeFile('companion/scripts/launch.sh','#!/bin/sh\nset -eu\napp_path="${PLANNER_APP_PATH:-/Applications/Planner.app}"\nruntime="$app_path/Contents/Resources/runtime"\nif [ ! -x "$runtime/node" ]; then echo "Install Planner.app in /Applications or set PLANNER_APP_PATH." >&2; exit 1; fi\nexec "$runtime/node" "$runtime/companion.cjs"\n');await chmod('companion/scripts/launch.sh',0o755);

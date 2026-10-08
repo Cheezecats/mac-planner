@@ -3,5 +3,5 @@ window.addEventListener('DOMContentLoaded',()=>{document.documentElement.dataset
 contextBridge.exposeInMainWorld('planner',{
   isDesktop:true,
   request:(method:string,params:Record<string,unknown>={})=>ipcRenderer.invoke('planner:request',method,params),
-  subscribe:(callback:(event:unknown)=>void)=>{const listener=(_event:unknown,event:unknown)=>callback(event);ipcRenderer.on('planner:event',listener);ipcRenderer.send('planner:renderer-ready');return()=>ipcRenderer.removeListener('planner:event',listener)}
+  subscribe:(callback:(event:unknown)=>void)=>{const listener=(_event:unknown,event:unknown)=>callback(event);ipcRenderer.on('planner:event',listener);return()=>ipcRenderer.removeListener('planner:event',listener)}
 });

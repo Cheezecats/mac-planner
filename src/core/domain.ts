@@ -354,6 +354,29 @@ export function validateWorkspace(
     )
       throw new Error("Invalid page metadata");
     reminder(p.reminder);
+    if (p.remindersResumedAt !== undefined) timestamp(p.remindersResumedAt);
+    const completion = p.completionState;
+    if (completion !== undefined) {
+      if (!completion || p.status === 'active' || !Array.isArray(completion.entries))
+        throw new Error('Invalid portable completion state');
+      if (completion.reminder !== undefined) {
+        const saved = completion.reminder;
+        if (!saved || saved.before?.enabled !== true || saved.after?.enabled !== false || !('deadline' in saved))
+          throw new Error('Invalid completion reminder');
+        reminder(saved.before); reminder(saved.after);
+        if (saved.deadline !== null) validateDate(saved.deadline);
+      }
+      const ids = new Set<string>();
+      for (const saved of completion.entries) {
+        if (!saved || typeof saved.id !== 'string' || !saved.id || ids.has(saved.id) ||
+            typeof saved.active !== 'boolean' ||
+            !Number.isSafeInteger(saved.revisionAfterCompletion) || saved.revisionAfterCompletion < 1 ||
+            s.entries.some(e => e.id === saved.id && e.pageId !== p.id))
+          throw new Error('Invalid portable completion entry');
+        ids.add(saved.id);
+        reminder(saved.reminder);
+      }
+    }
     const trash = (
       p as Page & {
         trashState?: {
