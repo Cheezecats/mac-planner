@@ -1,11 +1,12 @@
 import type {BrowserWindow,WebContentsView} from 'electron';
-import {Menu} from 'electron';
+import {Menu,screen} from 'electron';
 import {promises as fs} from 'node:fs';
 import {join} from 'node:path';
 import type {Page,WorkspaceSnapshot} from '../shared/types';
 import type {WidgetHost} from './widgets';
 import {checkCompanion} from './smoke-mcp';
 import {waitForCaptureFrame} from './capture-frame';
+import {clampWindowBounds} from './window-state';
 export async function runSmoke(window:BrowserWindow,request:(method:string,params?:Record<string,unknown>)=>Promise<any>,directory:string,host:WidgetHost){
   window.webContents.on('console-message',details=>{if(details.level==='error')console.error('Smoke renderer:',details.message)});
   const results:Record<string,unknown>={};const s=await request('workspace.get') as WorkspaceSnapshot;if(!s.pages.length)await request('app.loadExample');
@@ -89,10 +90,18 @@ export async function runSmoke(window:BrowserWindow,request:(method:string,param
   await window.webContents.executeJavaScript('document.querySelector(".toast .icon-button")?.click();document.querySelector(".main-content").scrollTop=0');
 
   const completed=await request('page.complete',{id:page.id,expectedRevision:page.revision});const reopened=await request('page.reopen',{id:completed.id,expectedRevision:completed.revision});if(reopened.page.status!=='active'||reopened.restoredEntryCount!==1)throw new Error('Native Reopen did not restore scheduled work');results.completionReopen=true;
-  window.setSize(740,620);await capture('page-narrow.png','!!document.querySelector(".bn-editor")&&innerWidth===740');window.setSize(1260,860);
+  window.setSize(740,620);await capture('page-narrow.png','!!document.querySelector(".bn-editor")&&innerWidth===740');
+  const normalBounds=window.getNormalBounds(),quitBounds=clampWindowBounds({...normalBounds,width:1260,height:860},[screen.getDisplayMatching(normalBounds).workArea]);window.setBounds(quitBounds);
+  // AppKit can constrain a resize asynchronously on smaller hosted displays.
+  // Settle it before the final writes so those still exercise Quit's flush.
+  for(let stable=0,attempt=0;stable<3;attempt++){
+    if(attempt>=50)throw new Error(`Quit window bounds did not settle: expected ${JSON.stringify(quitBounds)}, actual ${JSON.stringify(window.getNormalBounds())}`);
+    await new Promise(r=>setTimeout(r,100));stable=JSON.stringify(window.getNormalBounds())===JSON.stringify(quitBounds)?stable+1:0;
+  }
+  results.quitWindowBounds=window.getNormalBounds();
   await views.get(widget.id)!.webContents.executeJavaScript('for(let sequence=81;sequence<=100;sequence++)void PlannerWidget.setState({sequence})');results.quitWidgetId=widget.id;
   // Trigger a real React input change immediately before Quit, inside the autosave delay.
   const quitTitle='Quit flush — 物理复习';
   await window.webContents.executeJavaScript(`(()=>{const input=document.querySelector('input[aria-label="Page title"]');const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(input,${JSON.stringify(quitTitle)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
-  results.quitPageId=physics.id;results.quitTitle=quitTitle;results.quitWindowBounds=window.getNormalBounds();results.nativeDatabase=true;results.noRendererErrors=await window.webContents.executeJavaScript('window.__plannerSmokeErrors.length===0&&!document.querySelector(".startup")');if(!results.noRendererErrors)throw new Error('Renderer reported an error during acceptance');await fs.writeFile(join(directory,'smoke-result.json'),JSON.stringify(results,null,2));console.log('PLANNER_SMOKE_SUCCESS',JSON.stringify(results));
+  results.quitPageId=physics.id;results.quitTitle=quitTitle;results.nativeDatabase=true;results.noRendererErrors=await window.webContents.executeJavaScript('window.__plannerSmokeErrors.length===0&&!document.querySelector(".startup")');if(!results.noRendererErrors)throw new Error('Renderer reported an error during acceptance');await fs.writeFile(join(directory,'smoke-result.json'),JSON.stringify(results,null,2));console.log('PLANNER_SMOKE_SUCCESS',JSON.stringify(results));
 }

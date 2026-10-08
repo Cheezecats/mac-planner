@@ -27,5 +27,8 @@ it('desktop acceptance requires native quiescence even when Quit data is already
     expect(JSON.parse(await readFile(join(directory,'test-results/native/results.json'),'utf8')).quitRequestDrain).toBe(true);
     await writeFile(executable,`#!${process.execPath}\nconsole.log('PLANNER_SHUTDOWN_QUIESCED');process.kill(process.pid,'SIGKILL');\n`,{mode:0o755});
     const killed=run('1');expect(killed.status,'A signal-killed app must fail even if it saved data').not.toBe(0);expect(killed.stderr).toContain('SIGKILL');
+    await writeFile(executable,`#!${process.execPath}\nconsole.log('PLANNER_SHUTDOWN_QUIESCED');\n`,{mode:0o755});
+    const actual={x:0,y:25,width:1024,height:684};await writeFile(join(profile,'credentials.enc'),encryptPayload(JSON.stringify({'native:window-state':{bounds:actual,maximized:false}}),key));
+    const mismatched=run('1');expect(mismatched.status).not.toBe(0);expect(mismatched.stderr).toContain(`expected ${JSON.stringify(bounds)}`);expect(mismatched.stderr).toContain(`actual ${JSON.stringify(actual)}`);
   }finally{await rm(directory,{recursive:true,force:true})}
 });
