@@ -43,7 +43,7 @@ The interface uses the Mac system font, neutral surfaces, and compact rows. The 
 - **Find your work:** search titles, labels, and writing; choose results with arrows and Return; Escape returns focus.
 - **Feel at home on Mac:** native New, Search, Settings, Today, Back/Forward, and Window menus, plus remembered window bounds.
 
-v0.2 is a development candidate. Local automated and packaged Apple Silicon checks passed; the [acceptance record](docs/acceptance.md) tracks hosted checks and remaining signing, account, and accessibility evidence. [Changelog](CHANGELOG.md) · [Release requirements](docs/release.md)
+v0.2 is a development candidate. The [Mac checks](https://github.com/Cheezecats/mac-planner/actions/workflows/check-mac.yml) and [acceptance record](docs/acceptance.md) track validation of both architectures and the remaining signing, account, and accessibility requirements. [Changelog](CHANGELOG.md) · [Release requirements](docs/release.md)
 
 ## Get started
 

@@ -8,9 +8,10 @@ const dir=process.env.PLANNER_SMOKE_DIR??await mkdtemp(join(tmpdir(),'planner-sm
 console.log('Smoke profile:',dir);const binary=process.env.PLANNER_EXECUTABLE??'node_modules/.bin/electron';const args=process.env.PLANNER_EXECUTABLE?['--smoke']:['.','--smoke'];const child=spawn(binary,args,{env:{...process.env,PLANNER_DATA_DIR:dir},stdio:['ignore','pipe','pipe']});
 let diagnostics='';for(const [stream,output] of [[child.stdout,process.stdout],[child.stderr,process.stderr]])stream.on('data',chunk=>{diagnostics+=chunk.toString();output.write(chunk)});
 const timer=setTimeout(()=>{child.kill('SIGKILL');process.exitCode=1},90_000);
-await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',code=>{clearTimeout(timer);code?reject(new Error(`Desktop smoke exit ${code}`)):resolve()})});
+await new Promise((resolve,reject)=>{child.on('error',error=>{clearTimeout(timer);reject(error)});child.on('exit',(code,signal)=>{clearTimeout(timer);code!==0?reject(new Error(signal?`Desktop smoke terminated by ${signal}`:`Desktop smoke exit ${code}`)):resolve()})});
 if(/Planner startup failed/.test(diagnostics))throw new Error('Native app reported a startup error');
 const result=JSON.parse(await readFile(join(dir,'smoke-result.json'),'utf8'));
+if(!/^PLANNER_SHUTDOWN_QUIESCED\r?$/m.test(diagnostics))throw new Error('Native app did not acknowledge shutdown quiescence');result.quitRequestDrain=true;
 const ipcErrors=diagnostics.split('\n').filter(line=>line.includes('Error occurred in handler'));
 // The save-guard probe deliberately causes exactly one acknowledged revision conflict.
 if(ipcErrors.length&&!(result.nativeFailedSaveRetainsBuffer===true&&ipcErrors.length===1&&/^Error occurred in handler for 'planner:request': Error: Revision conflict: expected \d+, current \d+$/.test(ipcErrors[0])))throw new Error('Native app reported an unexpected IPC error');

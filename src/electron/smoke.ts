@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import type {Page,WorkspaceSnapshot} from '../shared/types';
 import type {WidgetHost} from './widgets';
 import {checkCompanion} from './smoke-mcp';
+import {waitForCaptureFrame} from './capture-frame';
 export async function runSmoke(window:BrowserWindow,request:(method:string,params?:Record<string,unknown>)=>Promise<any>,directory:string,host:WidgetHost){
   window.webContents.on('console-message',details=>{if(details.level==='error')console.error('Smoke renderer:',details.message)});
   const results:Record<string,unknown>={};const s=await request('workspace.get') as WorkspaceSnapshot;if(!s.pages.length)await request('app.loadExample');
@@ -12,7 +13,7 @@ export async function runSmoke(window:BrowserWindow,request:(method:string,param
   await window.webContents.executeJavaScript('window.__plannerSmokeErrors=[];window.addEventListener("error",event=>window.__plannerSmokeErrors.push(event.message));window.addEventListener("unhandledrejection",event=>window.__plannerSmokeErrors.push(String(event.reason)));');
   const wait=async()=>{for(let i=0;i<100;i++){if(await window.webContents.executeJavaScript('!!document.querySelector(".calendar-grid")||!!document.querySelector(".month-grid")||!!document.querySelector(".view-header")'))return;await new Promise(r=>setTimeout(r,100))}throw new Error('Renderer did not initialize')};await wait();
   const waitFor=async(expression:string,message:string)=>{for(let i=0;i<100;i++){if(await window.webContents.executeJavaScript(expression))return;await new Promise(r=>setTimeout(r,50))}throw new Error(message)};
-  const capture=async(name:string,expected:string)=>{await waitFor(expected,`Wrong view before ${name}`);await window.webContents.executeJavaScript('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');await new Promise(r=>setTimeout(r,150));await waitFor(expected,`View changed before ${name}`);await fs.writeFile(join(directory,'screenshots',name),(await window.capturePage()).toPNG())};
+  const capture=async(name:string,expected:string)=>{await waitFor(expected,`Wrong view before ${name}`);await waitForCaptureFrame(window.webContents,name);await new Promise(r=>setTimeout(r,150));await waitFor(expected,`View changed before ${name}`);await fs.writeFile(join(directory,'screenshots',name),(await window.capturePage()).toPNG())};
   const nativeCommand=async(label:string)=>{const item=Menu.getApplicationMenu()?.items.flatMap(menu=>menu.submenu?.items??[]).find(item=>item.label===label);if(!item)throw new Error(`Missing native command: ${label}`);item.click(undefined as any,window,window.webContents)};
   const editTitle=async(value:string)=>window.webContents.executeJavaScript(`(()=>{const input=document.querySelector('input[aria-label="Page title"]');const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
   const beforeNew=(await request('workspace.get') as WorkspaceSnapshot).pages;

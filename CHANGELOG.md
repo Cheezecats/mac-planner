@@ -10,8 +10,9 @@ This candidate improves everyday navigation, completion, search, and Mac command
 - Focus contains active tasks. All items retains completed/archived filters; empty Focus links to it. Work, Due, and Event markers explain dates.
 - Native menus and the menu-bar New page action use the editor save guard, work with a hidden window, and queue until the renderer is ready. Window bounds are encrypted and clamped to available displays. Settings reports backup, reminder, and companion operations separately.
 - Runtime preparation initializes Electron before copying its required notices, correcting the clean-install failure that prevented hosted native checks.
+- Quit drains accepted editor and background requests before closing storage and the window. Failed saving or drain acknowledgement keeps the window usable with its editing buffer.
 
-Validation: 209 tests across 22 files, TypeScript, production build, desktop acceptance, Apple Silicon DMG/ZIP packaging, and packaged native acceptance passed. See [current acceptance](docs/acceptance.md). Intel hosted checks, signing/notarization, real account/provider flows, signed notifications, actual Chinese IME/VoiceOver, and downloaded-install/upgrade validation remain release gates.
+Validation: 219 tests across 26 files, TypeScript, production build, desktop acceptance, Apple Silicon DMG/ZIP packaging, and packaged native acceptance passed. The first hosted PR run passed both architectures; a parallel Intel run exposed a shutdown race corrected with additional drain tests. See [current acceptance](docs/acceptance.md) and [latest pull-request checks](https://github.com/Cheezecats/mac-planner/pull/1/checks). Signing/notarization, real account/provider flows, signed notifications, actual Chinese IME/VoiceOver, and downloaded-install/upgrade validation remain release gates.
 
 ## 0.1.0 — development candidate — 2026-10-07
 

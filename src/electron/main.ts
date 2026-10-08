@@ -15,6 +15,8 @@ import {loadExample} from './example';
 import {loadPublicConfiguration} from './public-config';
 import {createPlannerMenus,NativeCommandQueue} from './native-ui';
 import {clampWindowBounds,WindowStateStore} from './window-state';
+import {RequestDrain} from './request-drain';
+import {requirePlannerSurface,ShutdownHandshake} from './shutdown';
 const smoke=process.argv.includes('--smoke');
 if(process.env.PLANNER_DATA_DIR)app.setPath('userData',process.env.PLANNER_DATA_DIR);
 else app.setPath('userData',join(app.getPath('appData'),'Planner'));
@@ -22,6 +24,8 @@ let window:BrowserWindow|null=null,quitting=false,cleanedUp=false,tray:Tray|null
 let rendererReady=false,pendingOpen:{id:string;blockId?:string}|null=null;
 let windowState:WindowStateStore,boundsTimer:NodeJS.Timeout|undefined;
 let windowCreation:Promise<void>|null=null;
+const requests=new RequestDrain(),shutdownHandshake=new ShutdownHandshake();
+let shutdownPhase='running';
 const uiCommands=new NativeCommandQueue(showWindow,emit);
 function workAreas(){const primary=screen.getPrimaryDisplay();return [primary,...screen.getAllDisplays().filter(display=>display.id!==primary.id)].map(display=>display.workArea)}
 async function persistWindow(){if(boundsTimer){clearTimeout(boundsTimer);boundsTimer=undefined}if(window&&!window.isDestroyed())await windowState.save({bounds:window.getNormalBounds(),maximized:window.isMaximized()})}
@@ -29,10 +33,12 @@ function queueWindowSave(){if(boundsTimer)clearTimeout(boundsTimer);boundsTimer=
 async function showWindow(){await createWindow();if(window?.isMinimized())window.restore();window?.show();window?.focus()}
 let flushPending:{id:string;resolve:()=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout}|null=null;
 function flushRenderer(){if(!window||window.isDestroyed()||!rendererReady)return Promise.resolve();return new Promise<void>((resolve,reject)=>{const id=randomBytes(8).toString('hex');const timer=setTimeout(()=>{flushPending=null;reject(new Error('The editor did not acknowledge saving. Try quitting again after saving.'))},10000);flushPending={id,resolve,reject,timer};emit({type:'flush-request',data:{id}})})}
+async function quiesceRenderer(){if(!window||window.isDestroyed()||!rendererReady)return;const nonce=randomBytes(16).toString('hex');await shutdownHandshake.wait(nonce,()=>window!.webContents.send('planner:quiesce',{nonce}))}
 const coreMethods=new Set(['workspace.get','workspace.export','page.create','page.update','page.patch','page.resource','page.complete','page.reopen','page.undo','page.duplicate','page.instantiate','page.archive','page.delete','page.restore','page.purge','schedule.create','schedule.update','schedule.move','schedule.status','schedule.remove','label.create','label.update','label.delete','study.save','widget.save','asset.remove','suggestion.accept','suggestion.dismiss','settings.update']);
 function emit(event:AppEvent){if(window&&!window.isDestroyed())window.webContents.send('planner:event',event)}
 async function openPage(id:string,blockId?:string){const snapshot=await data.request<WorkspaceSnapshot>('workspace.get');if(!snapshot.pages.some(p=>p.id===id))throw new Error('Page not found');await showWindow();if(rendererReady)emit({type:'open-page',pageId:id,data:{blockId}});else pendingOpen={id,blockId}}
-async function request(method:string,params:Record<string,unknown>={}){
+function request(method:string,params:Record<string,unknown>={}){return requests.run(()=>performRequest(method,params))}
+async function performRequest(method:string,params:Record<string,unknown>={}){
   if(typeof method!=='string'||!params||typeof params!=='object'||Buffer.byteLength(JSON.stringify(params))>8_000_000)throw new Error('Invalid Planner request');
   let result:unknown;
   if(method==='app.rendererReady'){rendererReady=true;if(pendingOpen){emit({type:'open-page',pageId:pendingOpen.id,data:{blockId:pendingOpen.blockId}});pendingOpen=null}uiCommands.setReady(true);return {received:true}}
@@ -63,7 +69,12 @@ async function loadWindow(){rendererReady=false;uiCommands.setReady(false);const
 }
 if(!app.requestSingleInstanceLock())app.quit();
 else {
-app.on('before-quit',event=>{if(cleanedUp)return;event.preventDefault();if(quitting)return;quitting=true;void flushRenderer().then(async()=>{await persistWindow();await widgets?.flushAndStop();await data?.request('workspace.get');await files?.dispose();reminders?.stop();window?.destroy();window=null;await data?.close();cleanedUp=true;app.quit()}).catch(error=>{quitting=false;window?.show();dialog.showErrorBox('Your writing is not saved yet',String(error))})});
+app.on('before-quit',event=>{if(cleanedUp)return;event.preventDefault();if(quitting)return;quitting=true;shutdownPhase='flushing';window?.setEnabled(false);void flushRenderer().then(async()=>{
+  await persistWindow();shutdownPhase='tools';await widgets?.flushAndStop();
+  shutdownPhase='quiescing';await quiesceRenderer();shutdownPhase='draining';await requests.pauseAndDrain();
+  await data?.request('workspace.get');await files?.dispose();reminders?.stop();
+  shutdownPhase='closing-data';await data?.close();shutdownPhase='destroying-window';window?.destroy();window=null;cleanedUp=true;app.quit();
+}).catch(error=>{requests.resume();quitting=false;shutdownPhase='running';if(window&&!window.isDestroyed()){window.webContents.send('planner:resume');window.setEnabled(true);window.show();window.focus()}dialog.showErrorBox('Your writing is not saved yet',String(error))})});
 app.on('window-all-closed',()=>{});
 void app.whenReady().then(async()=>{
   const directory=app.getPath('userData');await fs.mkdir(directory,{recursive:true,mode:0o700});let key:Buffer;
@@ -73,7 +84,8 @@ void app.whenReady().then(async()=>{
   files=new NativeFiles({dataDir:directory,key,request:gateway,getWindow:()=>window});await files.initialize();backups=new NativeBackups({dataDir:directory,key,request:gateway,getWindow:()=>window,credentials:vault});
   widgets=new WidgetHost(gateway,()=>window,emit);integrations=new IntegrationHost(gateway,vault,async(id,pageId)=>{const s=await gateway<WorkspaceSnapshot>('workspace.get');if(!s.assets.some(a=>a.id===id&&a.pageId===pageId))throw new Error('Select a source attached to this page');return await files.handle('file.read',{id}) as string},emit,await loadPublicConfiguration(app.isPackaged?join(process.resourcesPath,'runtime','public-config.json'):join(__dirname,'../runtime/public-config.json')));await integrations.initialize();
   reminders=new ReminderRunner(()=>gateway<WorkspaceSnapshot>('workspace.get'),vault,(id,block)=>void openPage(id,block));reminders.start();powerMonitor.on('resume',()=>void reminders.tick());
-  ipcMain.handle('planner:request',(event,method,params)=>{if(event.sender!==window?.webContents||event.senderFrame!==window.webContents.mainFrame)throw new Error('Untrusted Planner surface');return request(method,params)});
+  ipcMain.handle('planner:request',(event,method,params)=>{if(smoke&&quitting)console.log('PLANNER_SHUTDOWN_REQUEST',JSON.stringify({method:typeof method==='string'?method:'invalid',phase:shutdownPhase,senderId:event.sender.id,windowPresent:Boolean(window),framePresent:Boolean(event.senderFrame),ownerMatches:event.sender===window?.webContents}));requirePlannerSurface(event,window);return request(method,params)});
+  ipcMain.handle('planner:quiesced',(event,message)=>{requirePlannerSurface(event,window);shutdownHandshake.acknowledge(message??{});if(smoke)console.log('PLANNER_SHUTDOWN_QUIESCED');return {received:true}});
   app.on('second-instance',()=>{void showWindow()});app.on('activate',()=>{void showWindow()});
   const recoverWindow=()=>{if(window&&!window.isDestroyed()&&!window.isFullScreen()){const bounds=clampWindowBounds(window.getNormalBounds(),workAreas());if(!window.isMaximized())window.setBounds(bounds);queueWindowSave()}};
   screen.on('display-removed',recoverWindow);screen.on('display-metrics-changed',recoverWindow);

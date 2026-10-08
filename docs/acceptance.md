@@ -4,12 +4,14 @@ This evidence covers an unsigned Apple Silicon development candidate on macOS 26
 
 ## Current automated and packaged results
 
-- Node 24.14.0: 209 tests across 22 files passed; TypeScript check passed.
+- Node 24.14.0: 219 tests across 26 files passed; TypeScript check passed.
 - Production renderer/native build, desktop acceptance, Apple Silicon Forge DMG/ZIP packaging, and acceptance against the actual packaged executable passed.
 - Native acceptance used separate temporary profiles and a test-only encryption key. The packaged run verified hidden-window New page exactly once, saving before Settings, retaining the buffer after an intentional revision conflict, Back/Forward, Search with real focused Escape input, Today, semantic Reopen, bundled companion access, existing widget isolation/recovery, pending writing/tool state at Quit, and encrypted window bounds.
 - Reopen tests cover later writing and unchanged full-editor autosaves, changed/deleted work, reminder choice changes, stale revisions, repeated completion, legacy history recovery/no-history behavior, portable restoration metadata, and template cleanup. Reminder resumption tests deliver future notifications and suppress old due times.
 - Search tests cover title/label/body ranking, recent ties, bounded escaped excerpts, second-result selection, and composition keys. Navigation tests cover nested Back/Forward, retained view context, and failed-save/commit rollback.
 - Clean-install preparation regression reproduces Electron's lazy extraction and verifies required notices and the versioned companion. This validates the correction locally; it does not replace a fresh hosted run.
+- Shutdown regressions hold actual preload requests open, verify no new sends after quiescence, require accepted writing and refreshes to settle before acknowledgement, report failures, resume after an aborted Quit, and reject foreign frames and stale nonces. A native diagnostic probe observed refreshes after the editor's save acknowledgement, confirming the teardown race. Quit now drains requests while the trusted window remains alive, then closes storage before destroying the window.
+- The packaged runner requires the completed quiescence marker and reports signal termination before reading results. Screenshot paint waits have a native deadline and never substitute an unpainted capture. One local packaged attempt stalled after the physics screenshot and was killed at the runner's timeout; the immediate rerun passed with saved writing, tool state, window bounds, and request draining verified. The exact stall location was not established by that old log; new deadlines provide a specific diagnostic.
 - Independent source review approved the final changes after reminder-restoration, assistant reopen-authorization, breadcrumb timing, and utility-transport findings were corrected and tested.
 
 The runtime is Node 24.14.0 arm64. Vite still reports the large editor bundle. No dependency pins or security isolation were relaxed.
@@ -30,7 +32,7 @@ Packaged screenshots under `test-results/native/` were inspected at normal and n
 
 ## Current release boundaries
 
-Intel hosted/native/package checks and artifact upload still need a new successful run. The earlier [hosted run](https://github.com/Cheezecats/mac-planner/actions/runs/37716430566) passed the then-current 144 tests but failed before native acceptance because Electron notices were copied before extraction. The reviewed v0.2 publication starts fresh hosted checks; their results will be recorded on the pull request.
+The [first v0.2 PR run](https://github.com/Cheezecats/mac-planner/actions/runs/37798617935) passed both architecture jobs through native acceptance, packaging, packaged acceptance, and artifact upload. A concurrent [push run](https://github.com/Cheezecats/mac-planner/actions/runs/37798549958) exposed an intermittent Intel shutdown IPC failure after application assertions passed. The correction adds quiescence and request draining; evidence for the updated head is recorded in the [latest PR checks](https://github.com/Cheezecats/mac-planner/pull/1/checks) and pull-request validation table. The earlier [v0.1 hosted run](https://github.com/Cheezecats/mac-planner/actions/runs/37716430566) passed 144 tests but failed before native acceptance because Electron notices were copied before extraction; that preparation failure is resolved on both hosted architectures.
 
 Real eligible ChatGPT inference, Google/Microsoft authorization, provider production verification, Developer ID signing/notarization, signed notification delivery, actual Chinese IME/VoiceOver/contrast validation, physical display changes, and downloaded fresh-install/upgrade recovery remain required. Public source and GitHub Issues are available; production privacy registration and signed binary distribution remain outstanding. Local fixture and packaged checks do not establish those external requirements.
 
