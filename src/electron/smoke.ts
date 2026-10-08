@@ -1,25 +1,56 @@
 import type {BrowserWindow,WebContentsView} from 'electron';
+import {Menu,screen} from 'electron';
 import {promises as fs} from 'node:fs';
 import {join} from 'node:path';
 import type {Page,WorkspaceSnapshot} from '../shared/types';
 import type {WidgetHost} from './widgets';
 import {checkCompanion} from './smoke-mcp';
+import {waitForCaptureFrame} from './capture-frame';
+import {clampWindowBounds} from './window-state';
 export async function runSmoke(window:BrowserWindow,request:(method:string,params?:Record<string,unknown>)=>Promise<any>,directory:string,host:WidgetHost){
   window.webContents.on('console-message',details=>{if(details.level==='error')console.error('Smoke renderer:',details.message)});
   const results:Record<string,unknown>={};const s=await request('workspace.get') as WorkspaceSnapshot;if(!s.pages.length)await request('app.loadExample');
   window.setSize(1586,992);
   await window.webContents.executeJavaScript('window.__plannerSmokeErrors=[];window.addEventListener("error",event=>window.__plannerSmokeErrors.push(event.message));window.addEventListener("unhandledrejection",event=>window.__plannerSmokeErrors.push(String(event.reason)));');
   const wait=async()=>{for(let i=0;i<100;i++){if(await window.webContents.executeJavaScript('!!document.querySelector(".calendar-grid")||!!document.querySelector(".month-grid")||!!document.querySelector(".view-header")'))return;await new Promise(r=>setTimeout(r,100))}throw new Error('Renderer did not initialize')};await wait();
+  const waitFor=async(expression:string,message:string)=>{for(let i=0;i<100;i++){if(await window.webContents.executeJavaScript(expression))return;await new Promise(r=>setTimeout(r,50))}throw new Error(message)};
+  const capture=async(name:string,expected:string)=>{await waitFor(expected,`Wrong view before ${name}`);await waitForCaptureFrame(window.webContents,name);await new Promise(r=>setTimeout(r,150));await waitFor(expected,`View changed before ${name}`);await fs.writeFile(join(directory,'screenshots',name),(await window.capturePage()).toPNG())};
+  const nativeCommand=async(label:string)=>{const item=Menu.getApplicationMenu()?.items.flatMap(menu=>menu.submenu?.items??[]).find(item=>item.label===label);if(!item)throw new Error(`Missing native command: ${label}`);item.click(undefined as any,window,window.webContents)};
+  const editTitle=async(value:string)=>window.webContents.executeJavaScript(`(()=>{const input=document.querySelector('input[aria-label="Page title"]');const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  const beforeNew=(await request('workspace.get') as WorkspaceSnapshot).pages;
+  window.hide();await nativeCommand('New Page');
+  await waitFor('!!document.querySelector(".bn-editor")','Native New Page did not open its editor');
+  const afterNew=(await request('workspace.get') as WorkspaceSnapshot).pages,nativePage=afterNew.find(page=>!beforeNew.some(old=>old.id===page.id));
+  if(!nativePage||afterNew.length!==beforeNew.length+1||!window.isVisible()||!window.isFocused())throw new Error('Hidden-window New Page did not show/focus exactly one new page');results.nativeHiddenNewPage=true;
+  await editTitle('Saved by native Settings');await nativeCommand('Settings…');
+  await waitFor('!!document.querySelector(".settings-content")','Native Settings did not navigate');
+  const savedNative=(await request('workspace.get') as WorkspaceSnapshot).pages.find(page=>page.id===nativePage.id)!;
+  if(savedNative.title!=='Saved by native Settings')throw new Error('Native Settings lost pending writing');results.nativeSaveGuard=true;
+  await nativeCommand('Back');await waitFor('!!document.querySelector(".bn-editor")','Native Back did not restore the editor');
+  // Produce a real revision conflict while a local edit is waiting for autosave.
+  await editTitle('Retained local writing');await request('page.update',{id:nativePage.id,expectedRevision:savedNative.revision,changes:{title:'External saved writing'}});await nativeCommand('Settings…');
+  await waitFor('!!document.querySelector(".save-error")','Conflicting native navigation did not report its failed save');
+  if(await window.webContents.executeJavaScript(`document.querySelector('input[aria-label="Page title"]')?.value`)!=='Retained local writing'||await window.webContents.executeJavaScript('!!document.querySelector(".settings-content")'))throw new Error('Failed native save discarded the editor buffer');results.nativeFailedSaveRetainsBuffer=true;
+  await window.webContents.executeJavaScript('Array.from(document.querySelectorAll(".save-error button")).find(button=>button.textContent==="Reload saved version").click()');
+  await waitFor(`document.querySelector('input[aria-label="Page title"]')?.value==="External saved writing"`,'Saved revision did not reload');
+  await window.webContents.executeJavaScript('document.querySelector(".toast .icon-button")?.click()');
+  await waitFor('!document.querySelector(".toast")&&!document.querySelector(".save-error")','Acknowledged conflict UI did not clear');
+  await nativeCommand('Forward');await waitFor('!!document.querySelector(".settings-content")','Native Forward did not restore Settings');results.nativeHistory=true;
+  await nativeCommand('Search');await waitFor('!!document.querySelector(".global-search input")','Native Search did not open');
+  await waitFor('document.activeElement===document.querySelector(".global-search input")','Native Search did not focus its input');
+  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});window.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+  await waitFor('!document.querySelector(".global-search input")','Search did not dismiss on Escape');
+  await nativeCommand('Today');await waitFor('!!document.querySelector(".calendar-grid")||!!document.querySelector(".month-grid")','Native Today did not show Calendar');results.nativeSearchToday=true;
   const page=await request('page.create',{title:'Research essay',deadline:{date:'2026-10-15',timeZone:'Asia/Shanghai'}}) as Page;const session=await request('schedule.create',{pageId:page.id,kind:'work',when:{date:'2026-10-12',timeZone:'Asia/Shanghai'}});await request('schedule.move',{id:session.id,expectedRevision:session.revision,when:{date:'2026-10-14',timeZone:'Asia/Shanghai'}});const after=await request('workspace.get') as WorkspaceSnapshot;if(after.pages.find(p=>p.id===page.id)?.deadline?.date!=='2026-10-15')throw new Error('Moving work changed deadline');results.scheduleIndependent=true;
-  await fs.mkdir(join(directory,'screenshots'),{recursive:true});await fs.writeFile(join(directory,'screenshots','calendar.png'),(await window.webContents.capturePage()).toPNG());
-  await window.webContents.executeJavaScript('document.querySelector("button[aria-label=Space]")?.click()');await new Promise(r=>setTimeout(r,350));await fs.writeFile(join(directory,'screenshots','space.png'),(await window.webContents.capturePage()).toPNG());
-  const physics=(await request('workspace.get') as WorkspaceSnapshot).pages.find(p=>p.title==='Physics HL exam')!;results.companionProtocol=await checkCompanion(directory,physics.id);await request('app.openPage',{id:physics.id});await new Promise(r=>setTimeout(r,500));results.editorLoaded=await window.webContents.executeJavaScript('!!document.querySelector(".bn-editor")');if(!results.editorLoaded)throw new Error('Block editor missing');await fs.writeFile(join(directory,'screenshots','page.png'),(await window.webContents.capturePage()).toPNG());
+  await fs.mkdir(join(directory,'screenshots'),{recursive:true});await capture('calendar.png','!!document.querySelector(".calendar-grid")&&!document.querySelector(".modal-backdrop")&&!document.querySelector(".toast")');results.calendarCaptureView='Calendar';
+  await window.webContents.executeJavaScript('document.querySelector("button[aria-label=Space]")?.click()');await capture('space.png','!!document.querySelector(".space-toolbar")&&!document.querySelector(".toast")');
+  const physics=(await request('workspace.get') as WorkspaceSnapshot).pages.find(p=>p.title==='Physics HL exam')!;results.companionProtocol=await checkCompanion(directory,physics.id);await request('app.openPage',{id:physics.id});await waitFor('!!document.querySelector(".bn-editor")','Block editor missing');results.editorLoaded=true;await capture('page.png','!!document.querySelector(".bn-editor")&&!document.querySelector(".toast")');
   const views=(host as unknown as {views:Map<string,WebContentsView>}).views;
   const widget=(await request('workspace.get') as WorkspaceSnapshot).widgets[0];await request('widget.mount',{id:widget.id,bounds:{x:500,y:470,width:500,height:290}});await new Promise(r=>setTimeout(r,300));
   await window.webContents.executeJavaScript('document.querySelector(".insert-anchor>button").click()');await new Promise(r=>setTimeout(r,100));
   results.compactLayout=await window.webContents.executeJavaScript(`(()=>{const menu=document.querySelector('.insert-menu').getBoundingClientRect(),insert=document.querySelector('.insert-anchor>button').getBoundingClientRect();const style=selector=>{const element=document.querySelector(selector);if(!element)throw new Error('Missing layout element: '+selector);return getComputedStyle(element)};return {sidebar:document.querySelector('.sidebar').getBoundingClientRect().width,uiText:style('.app').fontSize,titleText:style('.page-title').fontSize,writingText:style('.bn-block-content').fontSize,font:style('.app').fontFamily,viewport:{width:innerWidth,height:innerHeight},insertTop:insert.top,menuBottom:menu.bottom,menuFits:menu.bottom<=innerHeight&&insert.top>=28}})()`);
   if(!(results.compactLayout as any).menuFits)throw new Error('Insert controls exceed the visible page');
-  if(views.get(widget.id)!.getVisible())throw new Error('Native tool covered the Insert menu');await fs.writeFile(join(directory,'screenshots','page-insert.png'),(await window.webContents.capturePage()).toPNG());
+  if(views.get(widget.id)!.getVisible())throw new Error('Native tool covered the Insert menu');await capture('page-insert.png','!!document.querySelector(".insert-menu")');
   await window.webContents.executeJavaScript('document.querySelector(".popover-dismiss").click()');await new Promise(r=>setTimeout(r,100));if(!views.get(widget.id)!.getVisible())throw new Error('Tool did not return after closing the overlay');results.widgetOverlaySafe=true;
   await request('widget.stop',{id:widget.id});results.widgetMountStop=true;
   const probe='<script>(async()=>{let networkDenied=false,fileDenied=false;try{await fetch("https://example.invalid/planner-probe")}catch{networkDenied=true}try{await fetch("file:///etc/passwd")}catch{fileDenied=true}const state={networkDenied,fileDenied,nodeAbsent:typeof require==="undefined",processAbsent:typeof process==="undefined",appBridgeAbsent:typeof window.planner==="undefined"};for(let sequence=1;sequence<=20;sequence++)PlannerWidget.setState({...state,sequence})})()</script>';
@@ -35,6 +66,7 @@ export async function runSmoke(window:BrowserWindow,request:(method:string,param
   await request('widget.save',{record:{...record,source:'<script>while(true){}</script>'},expectedRevision:record.revision});
   let failed=false;await Promise.race([request('widget.mount',{id:widget.id,bounds:{x:500,y:470,width:500,height:290}}).catch(()=>{failed=true}),new Promise((_,reject)=>setTimeout(()=>reject(new Error('Infinite-loop tool did not stop')),12000))]);
   if(!failed||views.has(widget.id)||!await window.webContents.executeJavaScript('!!document.querySelector(".bn-editor")'))throw new Error('Infinite-loop containment failed');results.widgetLoopContained=true;
+  await window.webContents.executeJavaScript('document.querySelector(".toast .icon-button")?.click()');await waitFor('!document.querySelector(".toast")','Acknowledged tool failure message did not clear');
   record=(await request('workspace.get') as WorkspaceSnapshot).widgets.find(w=>w.id===widget.id)!;
   await request('widget.save',{record:{...record,source:widget.source,state:widget.state},expectedRevision:record.revision});
   await request('widget.mount',{id:widget.id,bounds:{x:500,y:470,width:500,height:290}});
@@ -57,8 +89,16 @@ export async function runSmoke(window:BrowserWindow,request:(method:string,param
   await fs.writeFile(join(directory,'screenshots','physics-tool.png'),(await views.get(widget.id)!.webContents.capturePage()).toPNG());
   await window.webContents.executeJavaScript('document.querySelector(".toast .icon-button")?.click();document.querySelector(".main-content").scrollTop=0');
 
-  const completed=await request('page.complete',{id:page.id,expectedRevision:page.revision});await request('page.undo',{id:completed.id});results.completionUndo=true;
-  window.setSize(740,620);await new Promise(r=>setTimeout(r,200));await fs.writeFile(join(directory,'screenshots','page-narrow.png'),(await window.webContents.capturePage()).toPNG());window.setSize(1260,860);
+  const completed=await request('page.complete',{id:page.id,expectedRevision:page.revision});const reopened=await request('page.reopen',{id:completed.id,expectedRevision:completed.revision});if(reopened.page.status!=='active'||reopened.restoredEntryCount!==1)throw new Error('Native Reopen did not restore scheduled work');results.completionReopen=true;
+  window.setSize(740,620);await capture('page-narrow.png','!!document.querySelector(".bn-editor")&&innerWidth===740');
+  const normalBounds=window.getNormalBounds(),quitBounds=clampWindowBounds({...normalBounds,width:1260,height:860},[screen.getDisplayMatching(normalBounds).workArea]);window.setBounds(quitBounds);
+  // AppKit can constrain a resize asynchronously on smaller hosted displays.
+  // Settle it before the final writes so those still exercise Quit's flush.
+  for(let stable=0,attempt=0;stable<3;attempt++){
+    if(attempt>=50)throw new Error(`Quit window bounds did not settle: expected ${JSON.stringify(quitBounds)}, actual ${JSON.stringify(window.getNormalBounds())}`);
+    await new Promise(r=>setTimeout(r,100));stable=JSON.stringify(window.getNormalBounds())===JSON.stringify(quitBounds)?stable+1:0;
+  }
+  results.quitWindowBounds=window.getNormalBounds();
   await views.get(widget.id)!.webContents.executeJavaScript('for(let sequence=81;sequence<=100;sequence++)void PlannerWidget.setState({sequence})');results.quitWidgetId=widget.id;
   // Trigger a real React input change immediately before Quit, inside the autosave delay.
   const quitTitle='Quit flush — 物理复习';

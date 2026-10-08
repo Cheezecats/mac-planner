@@ -2,7 +2,7 @@ import {createServer,connect,type Server} from 'node:net';
 import {promises as fs} from 'node:fs';
 import {join} from 'node:path';
 import {randomBytes,timingSafeEqual} from 'node:crypto';
-const methods=new Set(['workspace.get','page.create','page.update','page.patch','page.complete','page.undo','schedule.create','schedule.update','schedule.move','schedule.status','app.openPage']);
+const methods=new Set(['workspace.get','page.create','page.update','page.patch','page.complete','page.reopen','page.undo','schedule.create','schedule.update','schedule.move','schedule.status','app.openPage']);
 export async function startCompanion(directory:string,request:(method:string,params?:Record<string,unknown>)=>Promise<unknown>):Promise<Server>{
   await fs.mkdir(directory,{recursive:true,mode:0o700});const socketPath=join(directory,'planner.sock');
   try{await fs.unlink(socketPath)}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e}

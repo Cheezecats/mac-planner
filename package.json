@@ -1,7 +1,7 @@
 {
   "name": "planner-workspace",
   "productName": "Planner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A local Mac calendar and rich task workspace",
   "author": "Planner contributors",
   "license": "MIT",

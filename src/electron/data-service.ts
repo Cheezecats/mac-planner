@@ -8,7 +8,7 @@ const port = (process as NodeJS.Process & { parentPort?: ParentPort }).parentPor
 let repository: EncryptedRepository | undefined;
 let service: PlannerService | undefined;
 let chain = Promise.resolve();
-const allowed = /^(workspace\.(get|export|import)|page\.(create|resource|update|patch|complete|undo|duplicate|instantiate|archive|delete|restore|purge)|schedule\.(create|update|move|status|remove)|label\.(create|update|delete)|study\.save|widget\.save|asset\.(save|remove)|suggestion\.(upsert|accept|dismiss)|connection\.(save|remove)|calendar\.import|settings\.update)$/;
+const allowed = /^(workspace\.(get|export|import)|page\.(create|resource|update|patch|complete|reopen|undo|duplicate|instantiate|archive|delete|restore|purge)|schedule\.(create|update|move|status|remove)|label\.(create|update|delete)|study\.save|widget\.save|asset\.(save|remove)|suggestion\.(upsert|accept|dismiss)|connection\.(save|remove)|calendar\.import|settings\.update)$/;
 port?.on('message', ({ data }) => {
   chain = chain.then(async () => {
     const message = data as { type?: string; id?: string; dataDir?: string; key?: string; method?: string; params?: Record<string, unknown> };

@@ -51,6 +51,34 @@ function setup(
   };
 }
 describe("SIWC assistant", () => {
+  it.each(['Reopen this page', 'Please reopen this page', 'Could you reopen this page?', 'I want you to reopen this page', '重新打开这个页面', '请帮我重新打开这个页面'])('offers only the explicit reopen action for %s and returns the canonical result', async text => {
+    const result = { page: { ...page, revision: 4 }, restoredEntryCount: 2, skippedEntryCount: 1, message: 'Page reopened. Restored 2 scheduled entries; skipped 1 changed or deleted entry.' };
+    const request = vi.fn((method: string) => method === 'workspace.get' ? { pages: [{ ...page, status: 'completed' }] } : result);
+    const call = { type: 'function_call', namespace: 'planner', name: 'reopen_page', call_id: 'r', arguments: JSON.stringify({ expectedRevision: 3 }) };
+    const f = vi.fn().mockResolvedValueOnce(sse([completed([call])])).mockResolvedValueOnce(sse([completed()]));
+    await setup(f, request).client.send({ pageId: 'p', text, model: 'm' });
+    expect(request).toHaveBeenCalledWith('page.reopen', { id: 'p', expectedRevision: 3 });
+    const offered = JSON.parse(f.mock.calls[0][1].body).tools[0].tools;
+    expect(offered.some((t: any) => t.name === 'reopen_page')).toBe(true);
+    expect(offered.some((t: any) => t.name === 'patch_page')).toBe(false);
+    expect(JSON.parse(JSON.parse(f.mock.calls[1][1].body).input.find((t: any) => t.type === 'function_call_output').output)).toEqual({ result, changeSummary: result.message });
+  });
+  it.each(['Explain how to reopen this page', "Don't reopen this page", 'Add a checklist', 'I may reopen this page later', 'I am thinking about whether to reopen this page', 'Reopen this page? No, don’t do that.', 'Please reopen it — actually, don’t.', 'Could you not reopen this page? I want to reopen it later.', 'Please reopen this page tomorrow.', 'Reopen this page if I ask later.', '解释如何重新打开页面', '不要重新打开这个页面', '我可能以后重新打开这个页面', '请帮我重新打开这个页面，先不要执行', '重新打开这个页面，明天再做'])('does not grant inferred reopening for %s', async text => {
+    const request = vi.fn((_method: string) => ({ pages: [{ ...page, status: 'completed' }] }));
+    const call = { type: 'function_call', namespace: 'planner', name: 'reopen_page', call_id: 'r', arguments: JSON.stringify({ expectedRevision: 3 }) };
+    const f = vi.fn().mockResolvedValueOnce(sse([completed([call])])).mockResolvedValueOnce(sse([completed()]));
+    await setup(f, request).client.send({ pageId: 'p', text, model: 'm' });
+    expect(request.mock.calls.every(c => c[0] === 'workspace.get')).toBe(true);
+    expect(JSON.parse(f.mock.calls[0][1].body).tools[0].tools.some((t: any) => t.name === 'reopen_page')).toBe(false);
+  });
+  it.each([{ expectedRevision: 2 }, { expectedRevision: 3, id: 'other' }, { expectedRevision: 3, pageId: 'other' }])('guards reopen arguments %j', async args => {
+    const request = vi.fn((_method: string) => ({ pages: [{ ...page, status: 'completed' }] }));
+    const call = { type: 'function_call', namespace: 'planner', name: 'reopen_page', call_id: 'r', arguments: JSON.stringify(args) };
+    const f = vi.fn().mockResolvedValueOnce(sse([completed([call])])).mockResolvedValueOnce(sse([completed()]));
+    await setup(f, request).client.send({ pageId: 'p', text: 'Reopen this page', model: 'm' });
+    expect(request.mock.calls.every(c => c[0] === 'workspace.get')).toBe(true);
+    expect(JSON.parse(f.mock.calls[1][1].body).input.find((t: any) => t.type === 'function_call_output').output).toMatch(/scope|revision/);
+  });
   it('refuses history reads for a missing or trashed page', async () => {
     for (const pages of [[], [{ ...page, status: 'trashed' }]]) {
       const { client } = setup(vi.fn(), () => ({ pages }));
