@@ -1,0 +1,67 @@
+import type {BrowserWindow,WebContentsView} from 'electron';
+import {promises as fs} from 'node:fs';
+import {join} from 'node:path';
+import type {Page,WorkspaceSnapshot} from '../shared/types';
+import type {WidgetHost} from './widgets';
+import {checkCompanion} from './smoke-mcp';
+export async function runSmoke(window:BrowserWindow,request:(method:string,params?:Record<string,unknown>)=>Promise<any>,directory:string,host:WidgetHost){
+  window.webContents.on('console-message',details=>{if(details.level==='error')console.error('Smoke renderer:',details.message)});
+  const results:Record<string,unknown>={};const s=await request('workspace.get') as WorkspaceSnapshot;if(!s.pages.length)await request('app.loadExample');
+  window.setSize(1586,992);
+  await window.webContents.executeJavaScript('window.__plannerSmokeErrors=[];window.addEventListener("error",event=>window.__plannerSmokeErrors.push(event.message));window.addEventListener("unhandledrejection",event=>window.__plannerSmokeErrors.push(String(event.reason)));');
+  const wait=async()=>{for(let i=0;i<100;i++){if(await window.webContents.executeJavaScript('!!document.querySelector(".calendar-grid")||!!document.querySelector(".month-grid")||!!document.querySelector(".view-header")'))return;await new Promise(r=>setTimeout(r,100))}throw new Error('Renderer did not initialize')};await wait();
+  const page=await request('page.create',{title:'Research essay',deadline:{date:'2026-10-15',timeZone:'Asia/Shanghai'}}) as Page;const session=await request('schedule.create',{pageId:page.id,kind:'work',when:{date:'2026-10-12',timeZone:'Asia/Shanghai'}});await request('schedule.move',{id:session.id,expectedRevision:session.revision,when:{date:'2026-10-14',timeZone:'Asia/Shanghai'}});const after=await request('workspace.get') as WorkspaceSnapshot;if(after.pages.find(p=>p.id===page.id)?.deadline?.date!=='2026-10-15')throw new Error('Moving work changed deadline');results.scheduleIndependent=true;
+  await fs.mkdir(join(directory,'screenshots'),{recursive:true});await fs.writeFile(join(directory,'screenshots','calendar.png'),(await window.webContents.capturePage()).toPNG());
+  await window.webContents.executeJavaScript('document.querySelector("button[aria-label=Space]")?.click()');await new Promise(r=>setTimeout(r,350));await fs.writeFile(join(directory,'screenshots','space.png'),(await window.webContents.capturePage()).toPNG());
+  const physics=(await request('workspace.get') as WorkspaceSnapshot).pages.find(p=>p.title==='Physics HL exam')!;results.companionProtocol=await checkCompanion(directory,physics.id);await request('app.openPage',{id:physics.id});await new Promise(r=>setTimeout(r,500));results.editorLoaded=await window.webContents.executeJavaScript('!!document.querySelector(".bn-editor")');if(!results.editorLoaded)throw new Error('Block editor missing');await fs.writeFile(join(directory,'screenshots','page.png'),(await window.webContents.capturePage()).toPNG());
+  const views=(host as unknown as {views:Map<string,WebContentsView>}).views;
+  const widget=(await request('workspace.get') as WorkspaceSnapshot).widgets[0];await request('widget.mount',{id:widget.id,bounds:{x:500,y:470,width:500,height:290}});await new Promise(r=>setTimeout(r,300));
+  await window.webContents.executeJavaScript('document.querySelector(".insert-anchor>button").click()');await new Promise(r=>setTimeout(r,100));
+  results.compactLayout=await window.webContents.executeJavaScript(`(()=>{const menu=document.querySelector('.insert-menu').getBoundingClientRect(),insert=document.querySelector('.insert-anchor>button').getBoundingClientRect();const style=selector=>{const element=document.querySelector(selector);if(!element)throw new Error('Missing layout element: '+selector);return getComputedStyle(element)};return {sidebar:document.querySelector('.sidebar').getBoundingClientRect().width,uiText:style('.app').fontSize,titleText:style('.page-title').fontSize,writingText:style('.bn-block-content').fontSize,font:style('.app').fontFamily,viewport:{width:innerWidth,height:innerHeight},insertTop:insert.top,menuBottom:menu.bottom,menuFits:menu.bottom<=innerHeight&&insert.top>=28}})()`);
+  if(!(results.compactLayout as any).menuFits)throw new Error('Insert controls exceed the visible page');
+  if(views.get(widget.id)!.getVisible())throw new Error('Native tool covered the Insert menu');await fs.writeFile(join(directory,'screenshots','page-insert.png'),(await window.webContents.capturePage()).toPNG());
+  await window.webContents.executeJavaScript('document.querySelector(".popover-dismiss").click()');await new Promise(r=>setTimeout(r,100));if(!views.get(widget.id)!.getVisible())throw new Error('Tool did not return after closing the overlay');results.widgetOverlaySafe=true;
+  await request('widget.stop',{id:widget.id});results.widgetMountStop=true;
+  const probe='<script>(async()=>{let networkDenied=false,fileDenied=false;try{await fetch("https://example.invalid/planner-probe")}catch{networkDenied=true}try{await fetch("file:///etc/passwd")}catch{fileDenied=true}const state={networkDenied,fileDenied,nodeAbsent:typeof require==="undefined",processAbsent:typeof process==="undefined",appBridgeAbsent:typeof window.planner==="undefined"};for(let sequence=1;sequence<=20;sequence++)PlannerWidget.setState({...state,sequence})})()</script>';
+  let record=(await request('workspace.get') as WorkspaceSnapshot).widgets.find(w=>w.id===widget.id)!;
+  await request('widget.save',{record:{...record,source:probe},expectedRevision:record.revision});
+  await request('widget.mount',{id:widget.id,bounds:{x:500,y:470,width:500,height:290}});
+  for(let i=0;i<100;i++){record=(await request('workspace.get') as WorkspaceSnapshot).widgets.find(w=>w.id===widget.id)!;if(record.state.sequence===20)break;await new Promise(r=>setTimeout(r,50))}
+  for(const name of ['networkDenied','fileDenied','nodeAbsent','processAbsent','appBridgeAbsent'])if(record.state[name]!==true)throw new Error(`Widget containment failed: ${name}`);
+  if(record.state.sequence!==20)throw new Error('Rapid widget state lost its last write');results.widgetAccessDenied=true;results.widgetRapidState=true;
+  views.get(widget.id)!.webContents.forcefullyCrashRenderer();await new Promise(r=>setTimeout(r,300));
+  if(!await window.webContents.executeJavaScript('!!document.querySelector(".bn-editor")'))throw new Error('Widget crash affected the editor');results.widgetCrashContained=true;
+  record=(await request('workspace.get') as WorkspaceSnapshot).widgets.find(w=>w.id===widget.id)!;
+  await request('widget.save',{record:{...record,source:'<script>while(true){}</script>'},expectedRevision:record.revision});
+  let failed=false;await Promise.race([request('widget.mount',{id:widget.id,bounds:{x:500,y:470,width:500,height:290}}).catch(()=>{failed=true}),new Promise((_,reject)=>setTimeout(()=>reject(new Error('Infinite-loop tool did not stop')),12000))]);
+  if(!failed||views.has(widget.id)||!await window.webContents.executeJavaScript('!!document.querySelector(".bn-editor")'))throw new Error('Infinite-loop containment failed');results.widgetLoopContained=true;
+  record=(await request('workspace.get') as WorkspaceSnapshot).widgets.find(w=>w.id===widget.id)!;
+  await request('widget.save',{record:{...record,source:widget.source,state:widget.state},expectedRevision:record.revision});
+  await request('widget.mount',{id:widget.id,bounds:{x:500,y:470,width:500,height:290}});
+  await views.get(widget.id)!.webContents.executeJavaScript('void PlannerWidget.setState({mass:4.3,spring:21})');
+  await request('widget.reload',{id:widget.id});await new Promise(r=>setTimeout(r,150));
+  if(await views.get(widget.id)!.webContents.executeJavaScript('PlannerWidget.getState().mass')!==4.3)throw new Error('Reload restored stale widget state');results.widgetReloadState=true;
+  window.close();for(let i=0;i<30&&window.isVisible();i++)await new Promise(r=>setTimeout(r,50));if(window.isVisible())throw new Error('Window did not hide');window.show();
+  if(!views.has(widget.id)||!views.get(widget.id)!.getVisible())throw new Error('Reopening lost its native tool');results.widgetReopen=true;
+  if(!views.has(widget.id))throw new Error('The old widget removed its replacement');results.widgetReloadRace=true;
+  await window.webContents.executeJavaScript('document.querySelector(".widget .tool-actions button").click();document.querySelector(".widget").scrollIntoView({block:"center"})');await new Promise(r=>setTimeout(r,300));
+  const beforeSidebar=views.get(widget.id)!.getBounds();
+  await window.webContents.executeJavaScript('document.querySelector(".titlebar button").click()');await new Promise(r=>setTimeout(r,300));
+  const expectedBounds=await window.webContents.executeJavaScript(`(()=>{const r=document.querySelector('.widget-surface').getBoundingClientRect(),viewport=document.querySelector('.main-content').getBoundingClientRect();return {x:Math.max(r.left,viewport.left),y:Math.max(r.top,viewport.top),right:Math.min(r.right,viewport.right),bottom:Math.min(r.bottom,viewport.bottom)}})()`);
+  const expandedBounds=views.get(widget.id)!.getBounds();if(Math.abs(expandedBounds.x-expectedBounds.x)>1||Math.abs(expandedBounds.y-expectedBounds.y)>1||expandedBounds.x===beforeSidebar.x)throw new Error('Native tool did not follow sidebar layout');results.widgetLayoutFollow=true;
+  await window.webContents.executeJavaScript('document.querySelector(".titlebar button").click()');await new Promise(r=>setTimeout(r,300));
+  if(await views.get(widget.id)!.webContents.executeJavaScript('getComputedStyle(document.body).backgroundColor')!=='rgb(255, 255, 255)')throw new Error('Default tool surface did not match the light app');results.widgetLightDefault=true;
+  const graphBefore=await views.get(widget.id)!.webContents.executeJavaScript('document.querySelector("canvas").toDataURL()');
+  await views.get(widget.id)!.webContents.executeJavaScript('const slider=document.querySelector("#mass");slider.value="2";slider.dispatchEvent(new Event("input",{bubbles:true}))');
+  if(graphBefore===await views.get(widget.id)!.webContents.executeJavaScript('document.querySelector("canvas").toDataURL()'))throw new Error('Physics slider did not change its graph');results.physicsSliderGraph=true;
+  await fs.writeFile(join(directory,'screenshots','physics-tool.png'),(await views.get(widget.id)!.webContents.capturePage()).toPNG());
+  await window.webContents.executeJavaScript('document.querySelector(".toast .icon-button")?.click();document.querySelector(".main-content").scrollTop=0');
+
+  const completed=await request('page.complete',{id:page.id,expectedRevision:page.revision});await request('page.undo',{id:completed.id});results.completionUndo=true;
+  window.setSize(740,620);await new Promise(r=>setTimeout(r,200));await fs.writeFile(join(directory,'screenshots','page-narrow.png'),(await window.webContents.capturePage()).toPNG());window.setSize(1260,860);
+  await views.get(widget.id)!.webContents.executeJavaScript('for(let sequence=81;sequence<=100;sequence++)void PlannerWidget.setState({sequence})');results.quitWidgetId=widget.id;
+  // Trigger a real React input change immediately before Quit, inside the autosave delay.
+  const quitTitle='Quit flush — 物理复习';
+  await window.webContents.executeJavaScript(`(()=>{const input=document.querySelector('input[aria-label="Page title"]');const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(input,${JSON.stringify(quitTitle)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`);
+  results.quitPageId=physics.id;results.quitTitle=quitTitle;results.nativeDatabase=true;results.noRendererErrors=await window.webContents.executeJavaScript('window.__plannerSmokeErrors.length===0&&!document.querySelector(".startup")');if(!results.noRendererErrors)throw new Error('Renderer reported an error during acceptance');await fs.writeFile(join(directory,'smoke-result.json'),JSON.stringify(results,null,2));console.log('PLANNER_SMOKE_SUCCESS',JSON.stringify(results));
+}

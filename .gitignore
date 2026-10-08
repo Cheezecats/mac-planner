@@ -1,0 +1,14 @@
+node_modules/
+node_modules
+.planner-dependencies-old/
+dist/
+out/
+.npm-cache/
+.superpowers/
+.planner-data/
+test-results/
+coverage/
+.env
+.env.*
+!.env.example
+.DS_Store

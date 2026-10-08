@@ -1,0 +1,41 @@
+name: Mac checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:desktop
+      - run: npm run make -- --arch=${{ matrix.arch }}
+        env:
+          PLANNER_TARGET_ARCH: ${{ matrix.arch }}
+      - run: node scripts/desktop-smoke.mjs
+        env:
+          PLANNER_EXECUTABLE: out/Planner-darwin-${{ matrix.arch }}/Planner.app/Contents/MacOS/Planner
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Planner-${{ matrix.arch }}-development
+          path: |
+            out/make/**
+            test-results/native/**

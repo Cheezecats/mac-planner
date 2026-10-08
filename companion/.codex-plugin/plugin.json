@@ -1,0 +1,5 @@
+{
+  "name": "planner",
+  "version": "0.1.0",
+  "description": "Read, edit and schedule local Planner pages through a private socket."
+}
